@@ -1,0 +1,166 @@
+---
+title: "IMDB 5000 movie Dataset analysis"
+author: "Snekha Duppathi"
+date: "10/07/2020"
+output: html_document
+---
+
+```{r setup}
+if(!require("pacman")) install.packages("pacman") 
+pacman::p_load(shiny,tidyverse,ggplot2,corrplot,dplyr,leaflet,DT,lubridate,leaps,caret,here,GGally,DataExplorer,
+               randomForest)
+library(Hmisc)
+```
+
+```{r data}
+getwd()
+movies = read.csv('movie_metadata.csv',na.strings = c("", "NA"))
+str(movies)
+sapply(movies,function(x) sum(is.na(x)))
+#Removing rows with missing values
+movies=na.omit(movies)
+sapply(movies,function(x) sum(is.na(x)))
+str(movies)
+summary(movies)
+
+```
+While looking at the input data we can see there lot of missing values. We can impute missing data with mean for the numerical variables like gross,budget which have high number of missing values but it does not do a great job because it can mislead the data by giving high values to mediocre movies.Though we might lose some information by deleting few rows, we have a risk of corrupting data in other way.So,we remove the rows with missing data and keep the rest of the data. 
+
+```{r Data subsetting}
+
+options(scipen = 999)
+movies$profit_percent =  ((movies$gross - movies$budget)/movies$budget)*100
+
+# Subset for Tab 1
+t1a = movies %>% group_by(country) %>% summarise_at(vars(profit_percent),list(profit_percent = mean))
+t1a
+movies$usorno = ifelse(movies$country=='USA','USA', 'Others')
+t1b = movies %>% group_by(country = usorno) %>% summarise_at(vars(profit_percent),list(profit_percent = mean))
+t1b
+  
+# Subset for Tab 2
+t2 = movies %>% group_by(actor_1_name,director_name,movie_title) %>% summarise_at(vars(profit_percent),list(profit_percent = mean))
+t2 = t2[order(-t2$profit_percent),]
+t2$profit_percent = round(t2$profit_percent)
+t2
+
+# Subset for Tab 3
+movies1 = movies
+str(movies1)
+movies1 = movies1[,c('color','num_critic_for_reviews','duration','director_facebook_likes',
+                     'gross','num_voted_users','language','title_year','actor_3_facebook_likes',
+                     'cast_total_facebook_likes','facenumber_in_poster','num_user_for_reviews',
+                     'budget','imdb_score','aspect_ratio','usorno','actor_1_facebook_likes',
+                     'movie_facebook_likes','actor_2_facebook_likes')]
+movies1$usorno = as.factor(movies1$usorno)
+train.index <- createDataPartition(movies1$imdb_score,p=0.8,list=FALSE) 
+train.df <- movies1[train.index, ]
+valid.df <- movies1[-train.index, ]
+
+rf <- randomForest(imdb_score~., data = train.df)
+t3 = importance(rf)
+t3a = dimnames(t3)[1]
+t3a
+t3a=as.data.frame(t3a)
+names(t3a)[1] = 'Variables'
+t3a = cbind(t3a,t3[1:18])
+names(t3a)[2] = 'Importance'
+t3a = t3a[order(-t3a$Importance),]
+t3a = cbind(t3a,c(1:18))
+names(t3a)[3] = 'Rank'
+t3a
+
+
+# Subset for Tab 4
+t4 = data.frame(movies$movie_facebook_likes,movies$cast_total_facebook_likes,movies$budget,movies$title_year)
+names(t4)[1] = "movie_facebook_likes"
+names(t4)[2] = "cast_total_facebook_likes"
+names(t4)[3] = "budget"
+names(t4)[4] = "title_year"
+t4
+
+```
+The profit percentage calculation is done by subtracting the gross income of the movie by the budget of the movie and dividing by budget of movie and multiplying by 100. 
+
+For tab-1, we use the mean of the profits earned by the movies with respect to the country they were produced.The number of movies produced are unevenly distributed among different countries and to normalize it we use mean of the profits obtained in each country. 
+
+For tab-2, we use the mean of the profits earned by the movies grouped by Actor_1-Director combinations for the same reason as the above.
+
+For tab-3, we use the random forest algorithm to find the variables which influence the imdb score the most. For the model, the input attributes are a subset of the initial data variables because few variables are redundant like names(movie_title,director_name,actor names,movie_imdb_link,plot_keywords,country etc.). Genre, plot_keywords variable can also be ignored because there lot of unique values and they don't seem to have an predictive power as they are unique to movies.The remaining variables are used in the model.
+
+For tab-4, we have used scatter plot and heatmap to display if there is any relationship between Facebook likes for the movie and/or actors depend on the budget of the movie.
+
+```{r shiny}
+#Defining ui
+ui = fluidPage(
+  # App title ----
+  titlePanel("IMDB 5000 movie dataset"),
+  mainPanel(
+  tabsetPanel(
+  tabPanel("Tab 1 - Location vs Profitability",
+          sidebarPanel(
+          selectInput(inputId ='in1', label ='Select from the location choices',
+                      choices = c('All countries','USA vs others')),width =7),
+          plotOutput(outputId="plot1")
+  ),
+  tabPanel("Tab 2 - Top profitable Actor_1-Director combinations", 
+          sidebarPanel(
+          dataTableOutput("table1"),width = 20)
+  ),
+  tabPanel("Tab 3 - Variable importance", 
+           sidebarPanel(
+            selectInput(inputId ='number', label ='Top number of variables',choices = t3a$Rank)),
+          plotOutput(outputId="plot3")
+  ),
+  tabPanel("Tab 4 - Facebook likes vs Budget", 
+          plotOutput(outputId="plot4"),
+          plotOutput(outputId="plot5"),
+          plotOutput(outputId="plot6")
+  )
+  )
+  ))
+
+#Defining server
+server <- function(input,output){
+  output$plot1 <- renderPlot({
+    if(input$in1 == 'USA vs others'){out2 =t1b
+    ggplot(data=out2,aes(x=reorder(country,-profit_percent),y=profit_percent))+xlab("Country")+ ylab("Profit percentage")+ggtitle("Movies profitability in USA vs all other countries")+geom_bar(stat="identity",fill="#DD8888") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+    }
+ else{out1 =t1a
+    ggplot(data=out1,aes(x=reorder(country,-profit_percent),y=profit_percent))+xlab("Country")+ ylab("Profit percentage")+ggtitle("Overall Profitability in movies across countries")+geom_bar(stat="identity",fill="#DD8888") + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+ }  
+  }  )
+  output$table1 <- renderDataTable({
+    datatable(t2) 
+  } )
+  output$plot3 <- renderPlot({
+    out3 <-t3a %>% filter(Rank %in% c(1:input$number))
+    ggplot(data = out3)+ aes(x = reorder(Variables,-Importance) , y = Importance) + 
+geom_bar(stat = 'identity', position = 'dodge') + xlab("Variables")+ ylab("Importance")+
+  theme(axis.text.x = element_text(angle = 90))+ggtitle("Variable importance based on Random forest model")
+  } )
+  output$plot4 <- renderPlot({
+  ggplot(t4,aes(x = budget, y = movie_facebook_likes) ) + geom_point()+ggtitle("Budget vs Movie facebook likes")
+  } )
+  output$plot5 <- renderPlot({
+  ggplot(t4,aes(x = budget, y = cast_total_facebook_likes) ) + geom_point()+ggtitle("Budget vs Total cast facebook likes")
+  } )
+  output$plot6 <- renderPlot({
+  plot_correlation(t4)+ggtitle("Heatmap")
+  } )
+
+}
+
+
+shinyApp(ui = ui, server = server)
+```
+The movie location does seem to have impact on the profitability of the movie. It is seen that the US movies have significantly high profit compared to non-US movies. In terms of profitability since US is high the chances of high returns for the producers is great in US, but more movies should be produced outside the US to increase the market and profitability in other countries too. For example  countries like Afghanisthan, Iran have much greater profitability than USA. So, more movies should be produced outside the US.
+
+The shiny app has top actor_1 director combinations displayed.
+
+In terms of random forest model, the num_voted_users has the highest importance in predicting the imbd score followed by duration of the movie and so on. The color of the movie is least significant variable.
+
+We have used scatter plot and heatmap to display if there is any relationship between Facebook likes for the movie and/or actors depend on the budget of the movie. By seeing the charts we don't see any dependency of facebook likes of actors or movies with budget of the movie.
+
+
+
